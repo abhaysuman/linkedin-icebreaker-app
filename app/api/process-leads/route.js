@@ -9,15 +9,13 @@ function cleanJson(text) {
 
 export async function POST(req) {
   try {
-    const { apifyKey, apiKey, provider, profileUrl, customPrompt } = await req.json();
+    const { apifyKey, apiKey, provider, profileUrl, myOffer, customPrompt } = await req.json();
 
     console.log(`\n--- PROCESSING: ${profileUrl} ---`);
 
     const apifyClient = new ApifyClient({ token: apifyKey });
-
     console.log("Starting Scraper: dev_fusion/linkedin-profile-scraper...");
     
-    // Using the paid 'dev_fusion' scraper
     const run = await apifyClient.actor("dev_fusion/linkedin-profile-scraper").call({
       profileUrls: [profileUrl],
     });
@@ -38,59 +36,83 @@ export async function POST(req) {
     const postsRaw = profileData.posts || [];
     const experienceRaw = profileData.experience || [];
     const educationRaw = profileData.education || [];
+    const location = profileData.location || "";
 
     // Prepare Context
     const summaryData = `
       Name: ${fullName}
       Headline: ${headline}
+      Location: ${location}
       About: ${about} 
-      LATEST ACTIVITY: ${JSON.stringify(postsRaw.slice(0, 5))}
-      CAREER HISTORY: ${JSON.stringify(experienceRaw.slice(0, 3))}
-      EDUCATION: ${JSON.stringify(educationRaw)}
+      LATEST ACTIVITY (Look for Hiring, Funding, Product news): 
+      ${JSON.stringify(postsRaw.slice(0, 5))}
+      CAREER HISTORY (Look for Promotions, Tenure, Role Changes): 
+      ${JSON.stringify(experienceRaw.slice(0, 3))}
+      EDUCATION (Look for Alumni): 
+      ${JSON.stringify(educationRaw)}
     `;
 
     console.log("✅ Data Mapped Successfully for:", fullName);
 
-    // SYSTEM PROMPT: DYNAMIC HUMAN CONVERSATION
+    // SYSTEM PROMPT: THE "MASTER SIGNAL" BRAIN
     const systemPrompt = `
-      You are an expert networker. Your goal is to write a genuine, short connection request message (after the user accepts, this is the first DM).
+      You are an elite SDR Strategist with access to a "Master Signal Database."
+      
+      YOUR GOAL: 
+      Analyze the provided LinkedIn data (and any user context) to find the STRONGEST signal from the list below. Then, write a hyper-personalized connection request connecting that signal to "MY OFFER."
 
-      THE LEAD'S DATA:
-      ${summaryData}
+      1. INPUTS:
+      - **Lead Profile:** \n${summaryData}
+      - **My Offer:** "${myOffer}"
+      - **User Context:** "${customPrompt || ""}" (Check here for manual signals like G2/Ads/Tech Stack)
 
-      YOUR GOAL:
-      Write a message that feels 100% human. It must be short (under 50 words) and flow naturally.
+      2. MASTER SIGNAL DATABASE (Your Menu of Strategies):
+      
+      [TIER 1: HIGH CONVERSION - "INTENT & TIMING"] (Use if User Context provides data)
+      - **Competitor Reviews:** "Saw a user mention [Competitor] struggle on G2..."
+      - **Tech Churn:** "Noticed you dropped [Tool]..."
+      - **Category Intent:** "Our data shows high activity researching [Category]..."
 
-      STEP 1: THE ICEBREAKER (The "Why")
-      - Find the strongest signal (Product Launch, Promotion, Post, or Shared Background).
-      - Validate it naturally. (e.g., "Just saw the news about X—huge move.")
+      [TIER 2: STRATEGIC SHIFTS] (Infer from Posts/Headline)
+      - **New Ads:** "Saw your new LinkedIn/Meta ads for [Product]..."
+      - **Pixel Install:** "Saw you added TikTok pixel -> doubling down on Gen-Z?"
+      - **Job Description Change:** "Added 'Outbound' to AE role -> shifting to hunter mentality?"
 
-      STEP 2: THE BRIDGE (The "Connection")
-      - Do NOT use a hardcoded phrase. Adapt the transition to the context:
-        - *If they are a founder:* "Love watching how you're scaling this."
-        - *If they shared an insight:* "It's a perspective we don't see enough of in the industry."
-        - *If they are a peer:* "Always great to connect with others deep in the [Industry] weeds."
-        - *If they got promoted:* "Excited to see what you do with the new scope."
+      [TIER 3: PROFESSIONAL GROWTH] (Auto-Detect from LinkedIn Data)
+      - **Company News:** Funding, IPO, Acquisition.
+      - **Product Launch:** "Signals innovation/gaps in support."
+      - **Hiring/Expansion:** "Hiring VPs implies need for process tooling."
+      - **Headcount:** "Managing 500+ people creates scalability challenges."
 
-      STEP 3: THE CLOSE (The "Casual Ask")
-      - Keep it low pressure.
-      - Examples: "Would love to connect.", "Hope to cross paths.", "Great to have you in my network."
+      [TIER 4: THOUGHT LEADERSHIP] (Auto-Detect from Posts)
+      - **Recent Post:** Quote specific insight.
+      - **Podcast:** "Heard your episode on [Name]..."
+      - **Keywords:** "Noticed 'Revenue Ops' in your bio..."
 
-      STRICT RULES:
-      - Start with "Hi ${firstName},"
-      - NO "I hope this email finds you well."
-      - NO "I am writing to you because..."
-      - NO robotic or overly enthusiastic exclamation points.
-      - Make every message sound slightly different based on the specific signal found.
+      [TIER 5: PERSONAL BACKGROUND] (Auto-Detect from History/Education)
+      - **Job Change/Promo:** "Congrats on the move."
+      - **Tenure:** "With 10+ years in Fintech..."
+      - **Alumni/Location:** Shared college or "Top rated restaurant in [City]."
 
-      USER CUSTOM CONDITIONS:
-      ${customPrompt || ""}
+      [TIER 6: INFERRED CREATIVE (LEVEL 4)] (The "Smartest" Strategy)
+      - **Inferred Problem:** "Hiring 10 reps usually breaks onboarding."
+      - **Customer Suggestion:** Propose idea for *their* customers.
+      - **Phone Fail:** "Tried calling but couldn't get through..."
 
-      OUTPUT FORMAT (JSON ONLY):
+      3. YOUR TASK:
+      - **SCAN:** Look at the LinkedIn Data. Do you see a Tier 3, 4, or 5 signal?
+      - **CHECK:** Did the user provide a Tier 1 or 2 signal in the "User Context"?
+      - **SELECT:** Pick the ONE strongest signal.
+      - **DRAFT:** - Start with "Hi ${firstName},"
+        - **Icebreaker:** Validate the signal (Don't just state it. Validate the *impact*).
+        - **Bridge:** Connect the signal to "My Offer" using the "Level 4" logic (Problem -> Solution).
+        - **Close:** Low pressure.
+
+      4. OUTPUT FORMAT (JSON ONLY):
       {
-        "signal_used": "e.g. Funding Round",
-        "icebreaker": "The specific observation",
-        "message": "The full message: Hi [Name], [Icebreaker]. [Bridge]. [Casual Close]."
+        "strategy_selected": "Name of signal used (e.g. 'Tier 3 - Hiring Expansion')",
+        "icebreaker": "The specific hook",
+        "message": "The full message."
       }
     `;
 
@@ -101,10 +123,10 @@ export async function POST(req) {
       const completion = await openai.chat.completions.create({
         model: "gpt-4o",
         messages: [
-          { role: "system", content: "You are a helpful assistant that outputs JSON." },
+          { role: "system", content: "You are a smart sales strategist that outputs JSON." },
           { role: "user", content: systemPrompt },
         ],
-        temperature: 0.8, // Higher temperature = More variation in phrasing
+        temperature: 0.75, 
         response_format: { type: "json_object" },
       });
       resultText = completion.choices[0].message.content;
@@ -126,6 +148,7 @@ export async function POST(req) {
     return NextResponse.json({
       name: fullName,
       profileUrl: profileUrl,
+      strategy: parsedResult.strategy_selected,
       icebreaker: parsedResult.icebreaker,
       message: parsedResult.message
     });
