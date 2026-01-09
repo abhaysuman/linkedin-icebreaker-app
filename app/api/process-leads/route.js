@@ -21,30 +21,25 @@ function getNameFromUrl(url) {
 
 export async function POST(req) {
   try {
-    const { apifyKey, apiKey, provider, profileUrl, customPrompt, myOffer } = await req.json();
+    const { apifyKey, apiKey, provider, profileUrl, customPrompt } = await req.json();
 
-    // CHECK: DO WE HAVE AN OFFER?
-    const hasOffer = myOffer && myOffer.trim().length > 5;
-
-    console.log(`\n--- PROCESSING: ${profileUrl} (Mode: ${hasOffer ? 'Sales Bridge' : 'Natural Networking'}) ---`);
+    console.log(`\n--- PROCESSING: ${profileUrl} ---`);
 
     const apifyClient = new ApifyClient({ token: apifyKey });
     
-    // SWITCH: Using 'freshdata/fresh-linkedin-profile-data' (Reliable No-Cookie Alternative)
-    // MAKE SURE you added this actor: https://apify.com/freshdata/fresh-linkedin-profile-data
+    // USING 'freshdata/fresh-linkedin-profile-data'
+    // This is the best alternative since 'rocky' is gone and 'dev_fusion' blocked the API.
+    // Ensure you added it here: https://apify.com/freshdata/fresh-linkedin-profile-data
     console.log("Starting Scraper: freshdata/fresh-linkedin-profile-data...");
     
-    // Note: This actor expects input as 'linkedin_url' or 'url' depending on version, 
-    // but standard Apify actors often accept 'startUrls' or similar. 
-    // For FreshData, the documented input is often simple.
     const run = await apifyClient.actor("freshdata/fresh-linkedin-profile-data").call({
-      linkedin_url: profileUrl, // Specific input key for this actor
-      url: profileUrl // Backup key just in case
+      linkedin_url: profileUrl,
+      url: profileUrl
     });
 
     const { items } = await apifyClient.dataset(run.defaultDatasetId).listItems();
     
-    // FreshData often wraps the result in a 'data' object or returns it directly
+    // FreshData wraps result in .data usually
     const rawItem = items[0];
     const profileData = rawItem?.data || rawItem;
 
@@ -52,8 +47,7 @@ export async function POST(req) {
         throw new Error("Scraper finished but returned no data. Profile might be private.");
     }
 
-    // --- DATA MAPPING (Adjusted for FreshData format) ---
-    // They often return 'full_name', 'occupation', 'summary', 'experiences', 'education'
+    // --- DATA MAPPING ---
     let fullName = profileData.full_name || profileData.name || profileData.title || `${profileData.first_name} ${profileData.last_name}`;
     
     if (!fullName || fullName.includes("undefined") || fullName.length < 2) {
@@ -61,15 +55,10 @@ export async function POST(req) {
     }
     
     const firstName = fullName.split(' ')[0] || "there";
-    
     const headline = profileData.headline || profileData.occupation || "";
     const about = profileData.summary || profileData.about || "";
-    
-    // FreshData usually returns 'experiences' array and 'education' array
     const experienceRaw = profileData.experiences || profileData.work_experience || [];
     const educationRaw = profileData.education || [];
-    
-    // Posts might not be available in standard FreshData runs, so we rely on About/Headline
     const postsRaw = profileData.posts || []; 
 
     // Context for AI
@@ -78,56 +67,47 @@ export async function POST(req) {
       Current Role: ${headline}
       About Section: ${about}
       Career History: ${JSON.stringify(experienceRaw.slice(0, 3))}
-      Education: ${JSON.stringify(educationRaw)}
       Recent Posts: ${JSON.stringify(postsRaw.slice(0, 2))}
     `;
 
-    // --- DYNAMIC SYSTEM PROMPT ---
+    // --- DYNAMIC INDUSTRY PEER PROMPT ---
     const systemPrompt = `
-      You are an expert networker. 
+      You are a professional networker. 
       
-      CURRENT MODE: ${hasOffer ? "**SALES OUTREACH**" : "**PURE NETWORKING (NO SELLING)**"}
+      YOUR GOAL:
+      Write a warm, specific connection request that sounds like it comes from a peer in the same industry.
 
-      **INPUTS:**
+      INPUTS:
       - Lead Data: ${summaryData}
-      - Extra Context (Ads/Tech Signals): "${customPrompt || "None"}"
-      ${hasOffer ? `- My Offer to Bridge to: "${myOffer}"` : "- NO OFFER PROVIDED. DO NOT PITCH."}
+      - External Signals (Ads/Tech): "${customPrompt || "None"}"
 
-      **YOUR TASK: SCAN FOR THESE "DEEP SIGNALS" IN THE TEXT:**
-      1. **Company News:** Funding, IPO, Acquisitions mentioned in About/Experience.
-      2. **Tech Stack:** Mentions of AWS, HubSpot, or "Tech Churn" (switching tools).
-      3. **Podcasts:** Mentions of "Episode", "Host", or "Guest".
-      4. **Role/Venture:** Specific past companies founded or led.
+      **STEP 1: ANALYZE THE INDUSTRY**
+      Look at their Headline, Summary, and History. What is their SPECIFIC field?
+      - Bad: "Business"
+      - Good: "Supply Chain", "FinTech", "SaaS Sales", "Cloud Infrastructure", "D2C Marketing".
+      -> Save this as [INDUSTRY].
 
-      ---------------------------------------------------------
-      **LOGIC FLOW:**
+      **STEP 2: FIND THE ICEBREAKER (The "Deep Signal")**
+      Scan for:
+      1. **News:** Funding/Acquisitions mentioned.
+      2. **Content:** A specific insight from their post or about section.
+      3. **Venture:** A past company they founded or led.
+      4. **Role:** "Leading [Company] as [Role] is impressive."
+      *Constraint:* Keep the icebreaker under 20 words.
 
-      **IF MODE = PURE NETWORKING (No Offer provided):**
-      - **Goal:** Be a genuine peer. Validate their work.
-      - **Structure:** 1. Hi ${firstName},
-        2. **Icebreaker:** specific observation about their [Signal/Venture/News].
-        3. **Closing:** "Great to have you in my network." or "Love watching how you're scaling this."
-      - **CRITICAL:** STOP THERE. Do NOT add "I'd love to chat about synergies" or any fluff. Keep it clean like: "Impressed by your journey with [Company]. Great to have you in my network."
+      **STEP 3: COMPOSE THE MESSAGE**
+      Follow this EXACT structure:
+      "Hi ${firstName}, [Icebreaker]. Always great to connect with others deep in the [INDUSTRY] space. Would love to connect."
 
-      **IF MODE = SALES OUTREACH (Offer provided):**
-      - **Goal:** Bridge the signal to the offer naturally.
-      - **Structure:**
-        1. Hi ${firstName},
-        2. **Icebreaker:** Validate the [Signal].
-        3. **Bridge:** "Usually, [Signal] brings challenges with [Problem my Offer solves]. We help teams [Value Prop]..."
-        4. **Closing:** Soft ask.
-
-      ---------------------------------------------------------
-      **STRICT ANTI-ROBOT RULES:**
-      1. **NEVER** say "I noticed a lack of recent activity." (Look at Headline/History instead).
-      2. **NEVER** use generic phrases like "I hope this finds you well."
-      3. **Search** the provided text deeply for the "Deep Signals" listed above.
-      4. If "Pure Networking", the message must be under 30 words.
+      **RULES:**
+      - No selling. No pitching.
+      - [INDUSTRY] must be specific to them (e.g. "supply chain", "generative AI", "commercial real estate").
+      - Do not use generic filler like "I hope you are well."
 
       **OUTPUT FORMAT (JSON ONLY):**
       {
-        "icebreaker": "The specific observation",
-        "message": "The final message based on the logic above."
+        "icebreaker": "The specific observation used",
+        "message": "The final message string."
       }
     `;
 
