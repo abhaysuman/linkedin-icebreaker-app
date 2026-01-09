@@ -1,6 +1,7 @@
 "use client";
 import { useState } from 'react';
 import { Copy, Loader2, Play, Table as TableIcon, Bot, Cpu, Trash2 } from 'lucide-react';
+import { Analytics } from "@vercel/analytics/next"
 
 export default function Home() {
   const [apifyKey, setApifyKey] = useState('');
