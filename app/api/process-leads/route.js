@@ -7,27 +7,13 @@ function cleanJson(text) {
   return text.replace(/```json/g, '').replace(/```/g, '').trim();
 }
 
-// Helper: Clean name by removing digits and extra spaces
-function formatName(rawName, url) {
+// HELPER: Extract Name from URL (Fallback)
+function getNameFromUrl(url) {
   try {
-    // 1. If we have a name, remove numbers (e.g. "Anil Kumar 123" -> "Anil Kumar")
-    if (rawName && rawName !== "undefined undefined") {
-      const clean = rawName.replace(/[0-9]/g, '').trim();
-      if (clean.length > 2) return clean;
-    }
-
-    // 2. Fallback: Extract from URL (e.g. linkedin.com/in/anil-kumar-b123 -> "Anil Kumar")
-    if (url) {
-      const slug = url.split('/in/')[1]?.split('/')[0] || "";
-      // Remove trailing ID parts often found in URLs (e.g. -3b48a91)
-      const namePart = slug.split('-').filter(part => !part.match(/^[a-zA-Z0-9]{5,}$/)).join(' '); 
-      
-      // Capitalize
-      return namePart
-        .replace(/-/g, ' ')
-        .replace(/\b\w/g, l => l.toUpperCase()) || "there";
-    }
-    return "there";
+    if (!url) return "there";
+    const slug = url.split('/in/')[1]?.split('/')[0] || "";
+    const cleanedSlug = slug.replace(/-[\d\w]+$/, '').replace(/-/g, ' '); 
+    return cleanedSlug.replace(/\b\w/g, l => l.toUpperCase()) || "there";
   } catch (e) {
     return "there";
   }
@@ -35,89 +21,105 @@ function formatName(rawName, url) {
 
 export async function POST(req) {
   try {
-    const { apifyKey, apiKey, provider, profileUrl, customPrompt } = await req.json();
+    const { apifyKey, apiKey, provider, profileUrl, customPrompt, myOffer } = await req.json();
 
-    console.log(`\n--- PROCESSING: ${profileUrl} ---`);
+    console.log(`\n--- 1. STARTING PROCESS: ${profileUrl} ---`);
 
     const apifyClient = new ApifyClient({ token: apifyKey });
 
-    // Using the paid 'dev_fusion' scraper
-    const run = await apifyClient.actor("dev_fusion/linkedin-profile-scraper").call({
+    // SWITCHING TO 'ROCKY' (Reliable for Paid Plans)
+    console.log("--- 2. CALLING APIFY (rocky/linkedin-profile-scraper) ---");
+    
+    const run = await apifyClient.actor("rocky/linkedin-profile-scraper").call({
       profileUrls: [profileUrl],
+      deepScrape: true, // Ask for more data (Posts, etc.)
     });
 
+    console.log("--- 3. FETCHING RESULTS ---");
     const { items } = await apifyClient.dataset(run.defaultDatasetId).listItems();
-    const profileData = items[0];
-
-    if (!profileData) {
-      console.error("❌ Apify returned no data!");
-      throw new Error("Failed to scrape data. Please check the URL.");
+    
+    // DEBUG: Print the raw data to console to see if it worked
+    if (items.length > 0) {
+      console.log("✅ RAW DATA RECEIVED. Keys found:", Object.keys(items[0]));
+    } else {
+      console.error("❌ APIFY RETURNED EMPTY LIST. Check if Profile is Public.");
+      throw new Error("Scraper finished but returned no profiles. Profile might be private.");
     }
 
-    // --- 1. CLEAN NAME EXTRACTION ---
-    const rawName = profileData.fullName || `${profileData.firstName || ''} ${profileData.lastName || ''}`;
-    const fullName = formatName(rawName, profileUrl);
-    const firstName = fullName.split(' ')[0];
+    const profileData = items[0];
 
-    // --- 2. MAP RICH DATA ---
-    const headline = profileData.headline || "";
-    const about = profileData.summary || profileData.about || "";
-    const company = profileData.currentJob?.company || "your company";
+    // --- 4. ROBUST MAPPING (Handle different scraper formats) ---
     
-    // Extract Posts (Key for your requested icebreaker style)
+    // NAME
+    let fullName = profileData.fullName || profileData.name || profileData.title; // Rocky sometimes puts name in title
+    if (!fullName || fullName === "undefined undefined") {
+      console.log("⚠️ Name missing in data. extracting from URL...");
+      fullName = getNameFromUrl(profileUrl);
+    }
+    const firstName = fullName.split(' ')[0] || "there";
+
+    // HEADLINE & ABOUT
+    const headline = profileData.headline || profileData.sub_title || "";
+    const about = profileData.summary || profileData.about || "";
+    
+    // POSTS (Rocky often puts them in 'posts' or 'activities')
     const postsRaw = profileData.posts || profileData.activities || [];
     
-    // Prepare Data Context
+    // EXPERIENCE (Rocky uses 'positions' or 'experience')
+    const experienceRaw = profileData.positions || profileData.experience || [];
+    
+    // EDUCATION
+    const educationRaw = profileData.education || [];
+
+    // DEBUG: Print what we found
+    console.log(`--- 5. MAPPED DATA ---`);
+    console.log(`Name: ${fullName}`);
+    console.log(`Headline: ${headline.substring(0, 30)}...`);
+    console.log(`Posts Found: ${postsRaw.length}`);
+    console.log(`Jobs Found: ${experienceRaw.length}`);
+
+    // Prepare Context for AI
     const summaryData = `
       Name: ${fullName}
-      Current Company: ${company}
       Headline: ${headline}
-      About: ${about} 
+      About: ${about.substring(0, 500)}...
       
-      RECENT POSTS/ACTIVITY (Use this for the hook): 
+      LATEST ACTIVITY: 
       ${JSON.stringify(postsRaw.slice(0, 3))}
       
-      CAREER HISTORY: 
-      ${JSON.stringify(profileData.experience?.slice(0, 3) || [])}
+      CAREER HISTORY (Positions): 
+      ${JSON.stringify(experienceRaw.slice(0, 3))}
+      
+      EDUCATION: 
+      ${JSON.stringify(educationRaw)}
     `;
 
-    console.log("✅ Data Mapped for:", fullName);
-
-    // --- 3. SYSTEM PROMPT: "BIGSTEP" FRAMEWORK ---
+    // --- 6. INTELLIGENT PROMPT (Using your specific strategy) ---
     const systemPrompt = `
-      You are an expert SDR at BigStep Technologies.
-      
-      YOUR GOAL: 
-      Write a specific, problem-solving cold DM based on the lead's activity.
+      You are an elite SDR doing deep research.
       
       LEAD DATA:
       ${summaryData}
 
-      USER CONTEXT / EXTRA INSTRUCTIONS:
-      ${customPrompt || ""}
+      YOUR OFFER / CONTEXT:
+      ${myOffer || "We help companies scale efficiently."}
 
-      STRUCTURE (Follow this EXACTLY):
-      1. **Greeting:** "Hi ${firstName},"
-      2. **The Hook (Icebreaker):** Reference a SPECIFIC post, comment, or news event from their data.
-         - *Example:* "Just saw your post about brands creating experiences, not just ads."
-         - *Fallback (only if no posts):* Reference a specific achievement in their career/headline.
-      3. **The Problem (Bridge):** Validate why that is hard/valuable.
-         - *Example:* "Making those ideas happen, and building products that truly connect, can be tough."
-      4. **The Solution (BigStep Pitch):** Mention how BigStep helps.
-         - *Context:* BigStep Technologies helps with Software Product Dev, E-Commerce, Data Analytics, and AI.
-         - *Example:* "At BigStep Technologies, we help companies with Software Product Dev to bring those powerful brand experiences to life."
-      5. **The CTA:**
-         - *Example:* "Curious how that could help ${company}?"
+      GOAL:
+      Write a short, Specific, "Level 4" Connection Request.
 
-      STRICT RULES:
-      - **NO Numbers in Names:** Ensure the name is clean (e.g. "Anil", not "Anil904").
-      - **NO Generic Fluff:** Do not say "Impressive profile." Quote their actual content.
-      - **Tone:** Professional, insightful, helpful.
-
-      OUTPUT FORMAT (JSON ONLY):
+      STRATEGY:
+      1. **Scan for Specificity:** Look for exact company names, awards (Forbes), specific posts, or growth metrics in the data.
+      2. **The "Icebreaker":**
+         - If they have a recent post: Quote the main insight.
+         - If NO recent post: Look at **Experience** or **About**. Mention a specific venture, acquisition, or role transition. (e.g. "Impressed by your exit at [Company]").
+         - *Never* say "I noticed you haven't posted." Find something else positive to validate.
+      3. **The "Bridge":** Connect that specific achievement to my offer naturally.
+      
+      OUTPUT JSON:
       {
-        "icebreaker": "The 1-sentence hook about their post/news",
-        "message": "The full message following the structure above."
+        "strategy": "e.g. Past Venture / Recent Post",
+        "icebreaker": "The 1-sentence specific observation",
+        "message": "Hi ${firstName}, [Icebreaker]. [Bridge]. [Short Close]."
       }
     `;
 
@@ -128,10 +130,10 @@ export async function POST(req) {
       const completion = await openai.chat.completions.create({
         model: "gpt-4o",
         messages: [
-          { role: "system", content: "You are a helpful assistant that outputs JSON." },
+          { role: "system", content: "You output valid JSON." },
           { role: "user", content: systemPrompt },
         ],
-        temperature: 0.7,
+        temperature: 0.75,
         response_format: { type: "json_object" },
       });
       resultText = completion.choices[0].message.content;
@@ -153,12 +155,13 @@ export async function POST(req) {
     return NextResponse.json({
       name: fullName,
       profileUrl: profileUrl,
+      strategy: parsedResult.strategy,
       icebreaker: parsedResult.icebreaker,
       message: parsedResult.message
     });
 
   } catch (error) {
-    console.error("API Error:", error);
+    console.error("❌ API ERROR:", error);
     return NextResponse.json({ error: error.message || "Something went wrong" }, { status: 500 });
   }
 }
