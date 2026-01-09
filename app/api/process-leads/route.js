@@ -7,15 +7,27 @@ function cleanJson(text) {
   return text.replace(/```json/g, '').replace(/```/g, '').trim();
 }
 
-// Helper: Extract name from URL if scraper fails (e.g. linkedin.com/in/john-doe -> John Doe)
-function getNameFromUrl(url) {
+// Helper: Clean name by removing digits and extra spaces
+function formatName(rawName, url) {
   try {
-    if (!url) return "there";
-    const slug = url.split('/in/')[1]?.split('/')[0] || "";
-    // Replace dashes with spaces and Capitalize Words
-    return slug
-      .replace(/-/g, ' ')
-      .replace(/\b\w/g, l => l.toUpperCase()) || "there";
+    // 1. If we have a name, remove numbers (e.g. "Anil Kumar 123" -> "Anil Kumar")
+    if (rawName && rawName !== "undefined undefined") {
+      const clean = rawName.replace(/[0-9]/g, '').trim();
+      if (clean.length > 2) return clean;
+    }
+
+    // 2. Fallback: Extract from URL (e.g. linkedin.com/in/anil-kumar-b123 -> "Anil Kumar")
+    if (url) {
+      const slug = url.split('/in/')[1]?.split('/')[0] || "";
+      // Remove trailing ID parts often found in URLs (e.g. -3b48a91)
+      const namePart = slug.split('-').filter(part => !part.match(/^[a-zA-Z0-9]{5,}$/)).join(' '); 
+      
+      // Capitalize
+      return namePart
+        .replace(/-/g, ' ')
+        .replace(/\b\w/g, l => l.toUpperCase()) || "there";
+    }
+    return "there";
   } catch (e) {
     return "there";
   }
@@ -29,8 +41,6 @@ export async function POST(req) {
 
     const apifyClient = new ApifyClient({ token: apifyKey });
 
-    console.log("Starting Scraper: dev_fusion/linkedin-profile-scraper...");
-    
     // Using the paid 'dev_fusion' scraper
     const run = await apifyClient.actor("dev_fusion/linkedin-profile-scraper").call({
       profileUrls: [profileUrl],
@@ -44,84 +54,70 @@ export async function POST(req) {
       throw new Error("Failed to scrape data. Please check the URL.");
     }
 
-    // --- BULLETPROOF DATA MAPPING ---
-    
-    // 1. Try to find the Name (Priority Order)
-    let fullName = profileData.fullName || profileData.name;
-    
-    if (!fullName && profileData.firstName && profileData.lastName) {
-      fullName = `${profileData.firstName} ${profileData.lastName}`;
-    }
-    
-    // Fallback: If scraper returned NULL for name, grab it from the URL
-    if (!fullName || fullName === "undefined undefined") {
-      console.log("⚠️ Name missing in data. Extracting from URL...");
-      fullName = getNameFromUrl(profileUrl);
-    }
+    // --- 1. CLEAN NAME EXTRACTION ---
+    const rawName = profileData.fullName || `${profileData.firstName || ''} ${profileData.lastName || ''}`;
+    const fullName = formatName(rawName, profileUrl);
+    const firstName = fullName.split(' ')[0];
 
-    const firstName = fullName.split(' ')[0] || "there";
-    const headline = profileData.headline || profileData.occupation || "";
+    // --- 2. MAP RICH DATA ---
+    const headline = profileData.headline || "";
     const about = profileData.summary || profileData.about || "";
+    const company = profileData.currentJob?.company || "your company";
     
-    // Handle specific array formats
+    // Extract Posts (Key for your requested icebreaker style)
     const postsRaw = profileData.posts || profileData.activities || [];
-    const experienceRaw = profileData.experience || profileData.positions || [];
-    const educationRaw = profileData.education || [];
-
-    // --------------------------------
-
-    // Prepare Context
+    
+    // Prepare Data Context
     const summaryData = `
       Name: ${fullName}
+      Current Company: ${company}
       Headline: ${headline}
       About: ${about} 
-      LATEST ACTIVITY: ${JSON.stringify(postsRaw.slice(0, 5))}
-      CAREER HISTORY: ${JSON.stringify(experienceRaw.slice(0, 3))}
-      EDUCATION: ${JSON.stringify(educationRaw)}
+      
+      RECENT POSTS/ACTIVITY (Use this for the hook): 
+      ${JSON.stringify(postsRaw.slice(0, 3))}
+      
+      CAREER HISTORY: 
+      ${JSON.stringify(profileData.experience?.slice(0, 3) || [])}
     `;
 
-    console.log("✅ Data Mapped Successfully for:", fullName);
+    console.log("✅ Data Mapped for:", fullName);
 
-    // SYSTEM PROMPT: DYNAMIC HUMAN CONVERSATION
+    // --- 3. SYSTEM PROMPT: "BIGSTEP" FRAMEWORK ---
     const systemPrompt = `
-      You are an expert networker. Your goal is to write a genuine, short connection request message.
-
-      THE LEAD'S DATA:
+      You are an expert SDR at BigStep Technologies.
+      
+      YOUR GOAL: 
+      Write a specific, problem-solving cold DM based on the lead's activity.
+      
+      LEAD DATA:
       ${summaryData}
 
-      YOUR GOAL:
-      Write a message that feels 100% human. It must be short (under 50 words) and flow naturally.
+      USER CONTEXT / EXTRA INSTRUCTIONS:
+      ${customPrompt || ""}
 
-      STEP 1: THE ICEBREAKER (The "Why")
-      - Find the strongest signal (Product Launch, Promotion, Post, or Shared Background).
-      - Validate it naturally. (e.g., "Just saw the news about X—huge move.")
-      - If NO signal is found, reference their Headline/Role (e.g. "Impressive track record at [Company].")
-
-      STEP 2: THE BRIDGE (The "Connection")
-      - Do NOT use a hardcoded phrase. Adapt the transition to the context:
-        - *If they are a founder:* "Love watching how you're scaling this."
-        - *If they shared an insight:* "It's a perspective we don't see enough of in the industry."
-        - *If they are a peer:* "Always great to connect with others deep in the [Industry] weeds."
-        - *If they got promoted:* "Excited to see what you do with the new scope."
-
-      STEP 3: THE CLOSE (The "Casual Ask")
-      - Keep it low pressure.
-      - Examples: "Would love to connect.", "Hope to cross paths.", "Great to have you in my network."
+      STRUCTURE (Follow this EXACTLY):
+      1. **Greeting:** "Hi ${firstName},"
+      2. **The Hook (Icebreaker):** Reference a SPECIFIC post, comment, or news event from their data.
+         - *Example:* "Just saw your post about brands creating experiences, not just ads."
+         - *Fallback (only if no posts):* Reference a specific achievement in their career/headline.
+      3. **The Problem (Bridge):** Validate why that is hard/valuable.
+         - *Example:* "Making those ideas happen, and building products that truly connect, can be tough."
+      4. **The Solution (BigStep Pitch):** Mention how BigStep helps.
+         - *Context:* BigStep Technologies helps with Software Product Dev, E-Commerce, Data Analytics, and AI.
+         - *Example:* "At BigStep Technologies, we help companies with Software Product Dev to bring those powerful brand experiences to life."
+      5. **The CTA:**
+         - *Example:* "Curious how that could help ${company}?"
 
       STRICT RULES:
-      - Start with "Hi ${firstName},"
-      - NO "I hope this email finds you well."
-      - NO "undefined" words.
-      - Make every message sound slightly different based on the specific signal found.
-
-      USER CUSTOM CONDITIONS:
-      ${customPrompt || ""}
+      - **NO Numbers in Names:** Ensure the name is clean (e.g. "Anil", not "Anil904").
+      - **NO Generic Fluff:** Do not say "Impressive profile." Quote their actual content.
+      - **Tone:** Professional, insightful, helpful.
 
       OUTPUT FORMAT (JSON ONLY):
       {
-        "signal_used": "e.g. Funding Round",
-        "icebreaker": "The specific observation",
-        "message": "The full message: Hi [Name], [Icebreaker]. [Bridge]. [Casual Close]."
+        "icebreaker": "The 1-sentence hook about their post/news",
+        "message": "The full message following the structure above."
       }
     `;
 
@@ -135,7 +131,7 @@ export async function POST(req) {
           { role: "system", content: "You are a helpful assistant that outputs JSON." },
           { role: "user", content: systemPrompt },
         ],
-        temperature: 0.8,
+        temperature: 0.7,
         response_format: { type: "json_object" },
       });
       resultText = completion.choices[0].message.content;
