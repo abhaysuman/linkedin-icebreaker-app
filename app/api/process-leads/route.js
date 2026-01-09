@@ -7,6 +7,20 @@ function cleanJson(text) {
   return text.replace(/```json/g, '').replace(/```/g, '').trim();
 }
 
+// Helper: Extract name from URL if scraper fails (e.g. linkedin.com/in/john-doe -> John Doe)
+function getNameFromUrl(url) {
+  try {
+    if (!url) return "there";
+    const slug = url.split('/in/')[1]?.split('/')[0] || "";
+    // Replace dashes with spaces and Capitalize Words
+    return slug
+      .replace(/-/g, ' ')
+      .replace(/\b\w/g, l => l.toUpperCase()) || "there";
+  } catch (e) {
+    return "there";
+  }
+}
+
 export async function POST(req) {
   try {
     const { apifyKey, apiKey, provider, profileUrl, customPrompt } = await req.json();
@@ -30,14 +44,31 @@ export async function POST(req) {
       throw new Error("Failed to scrape data. Please check the URL.");
     }
 
-    // Map fields
-    const fullName = profileData.fullName || (profileData.firstName + " " + profileData.lastName);
-    const firstName = profileData.firstName || fullName.split(' ')[0] || "there";
-    const headline = profileData.headline || "";
+    // --- BULLETPROOF DATA MAPPING ---
+    
+    // 1. Try to find the Name (Priority Order)
+    let fullName = profileData.fullName || profileData.name;
+    
+    if (!fullName && profileData.firstName && profileData.lastName) {
+      fullName = `${profileData.firstName} ${profileData.lastName}`;
+    }
+    
+    // Fallback: If scraper returned NULL for name, grab it from the URL
+    if (!fullName || fullName === "undefined undefined") {
+      console.log("⚠️ Name missing in data. Extracting from URL...");
+      fullName = getNameFromUrl(profileUrl);
+    }
+
+    const firstName = fullName.split(' ')[0] || "there";
+    const headline = profileData.headline || profileData.occupation || "";
     const about = profileData.summary || profileData.about || "";
-    const postsRaw = profileData.posts || [];
-    const experienceRaw = profileData.experience || [];
+    
+    // Handle specific array formats
+    const postsRaw = profileData.posts || profileData.activities || [];
+    const experienceRaw = profileData.experience || profileData.positions || [];
     const educationRaw = profileData.education || [];
+
+    // --------------------------------
 
     // Prepare Context
     const summaryData = `
@@ -53,7 +84,7 @@ export async function POST(req) {
 
     // SYSTEM PROMPT: DYNAMIC HUMAN CONVERSATION
     const systemPrompt = `
-      You are an expert networker. Your goal is to write a genuine, short connection request message (after the user accepts, this is the first DM).
+      You are an expert networker. Your goal is to write a genuine, short connection request message.
 
       THE LEAD'S DATA:
       ${summaryData}
@@ -64,6 +95,7 @@ export async function POST(req) {
       STEP 1: THE ICEBREAKER (The "Why")
       - Find the strongest signal (Product Launch, Promotion, Post, or Shared Background).
       - Validate it naturally. (e.g., "Just saw the news about X—huge move.")
+      - If NO signal is found, reference their Headline/Role (e.g. "Impressive track record at [Company].")
 
       STEP 2: THE BRIDGE (The "Connection")
       - Do NOT use a hardcoded phrase. Adapt the transition to the context:
@@ -79,8 +111,7 @@ export async function POST(req) {
       STRICT RULES:
       - Start with "Hi ${firstName},"
       - NO "I hope this email finds you well."
-      - NO "I am writing to you because..."
-      - NO robotic or overly enthusiastic exclamation points.
+      - NO "undefined" words.
       - Make every message sound slightly different based on the specific signal found.
 
       USER CUSTOM CONDITIONS:
@@ -104,7 +135,7 @@ export async function POST(req) {
           { role: "system", content: "You are a helpful assistant that outputs JSON." },
           { role: "user", content: systemPrompt },
         ],
-        temperature: 0.8, // Higher temperature = More variation in phrasing
+        temperature: 0.8,
         response_format: { type: "json_object" },
       });
       resultText = completion.choices[0].message.content;
