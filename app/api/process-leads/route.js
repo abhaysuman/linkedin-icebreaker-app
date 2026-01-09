@@ -7,11 +7,12 @@ function cleanJson(text) {
   return text.replace(/```json/g, '').replace(/```/g, '').trim();
 }
 
-// Helper: Clean Name
+// Helper: Clean Name from URL if scraper fails
 function getNameFromUrl(url) {
   try {
     if (!url) return "there";
     const slug = url.split('/in/')[1]?.split('/')[0] || "";
+    // Remove numbers at end, replace dashes with spaces, Capitalize
     const cleanedSlug = slug.replace(/-[\d\w]+$/, '').replace(/-/g, ' '); 
     return cleanedSlug.replace(/\b\w/g, l => l.toUpperCase()) || "there";
   } catch (e) {
@@ -27,7 +28,7 @@ export async function POST(req) {
 
     const apifyClient = new ApifyClient({ token: apifyKey });
     
-    // Using the 'dev_fusion' scraper (Standard for Paid Plans)
+    // Using 'dev_fusion' scraper (Standard for Paid Plans)
     const run = await apifyClient.actor("dev_fusion/linkedin-profile-scraper").call({
       profileUrls: [profileUrl],
     });
@@ -36,10 +37,15 @@ export async function POST(req) {
     const profileData = items[0];
 
     // --- DATA MAPPING ---
+    // 1. First Name Extraction (Prioritize Scraper -> Fallback to URL)
     let fullName = profileData?.fullName || profileData?.name || `${profileData?.firstName} ${profileData?.lastName}`;
-    if (!fullName || fullName.includes("undefined")) fullName = getNameFromUrl(profileUrl);
+    if (!fullName || fullName.includes("undefined") || fullName.length < 2) {
+        fullName = getNameFromUrl(profileUrl);
+    }
     
+    // Ensure we have a clean First Name for the greeting
     const firstName = fullName.split(' ')[0] || "there";
+    
     const headline = profileData?.headline || "";
     const about = profileData?.summary || profileData?.about || "";
     const postsRaw = profileData?.posts || [];
@@ -62,22 +68,26 @@ export async function POST(req) {
       Write a message that sounds like it came from a peer who understands their specific business challenges.
 
       INPUTS:
-      - **Lead:** ${summaryData}
+      - **Lead Profile:** ${summaryData}
+      - **External Signals (User Context):** "${customPrompt || "None provided"}" (Look here for Ad Library, Tech Stack, or Churn data).
       - **My Offer:** "${myOffer || "We help companies scale operations."}"
       
       ---------------------------------------------------------
       **STRATEGY: THE "PROBLEM-FIRST" BRIDGE**
       
-      Instead of saying "I saw your profile," you must **INFER A PROBLEM** based on their role/industry and bridge it to the offer.
+      **PRIORITY 1: EXTERNAL HIGH-INTENT SIGNALS (If found in User Context)**
+      - **Ad Library Launch:** If context mentions new ads -> "Just saw your new ad creatives for [Product] on LinkedIn—love the angle on [Value Prop]."
+      - **Tech Stack Churn:** If context mentions dropping a tool -> "Noticed you recently stopped using [Competitor Tool]. Usually, that means teams are looking for something more scalable..."
+      - **Tech Stack Install:** If context mentions using a tool -> "Saw you use [Tool], which usually implies you are focused on [Goal]..."
+      - **Podcast Appearance:** If context/profile mentions a podcast -> "Heard your episode on [Podcast Name]..."
 
-      **SCENARIO A: They have specific news (New Role, Funding, Post)**
-      - *Logic:* Validate the news -> Mention the "hidden pain" of that good news -> Offer solution.
-      - *Example:* "Saw the goal to mobilize 50k caregivers. Usually, the 'ops drag' hits hardest at this phase. We helped a similar group automate scheduling to handle that volume..."
+      **PRIORITY 2: PROFILE SIGNALS (Company News / Posts)**
+      - **Company News:** Funding/IPO/Acquisition -> "Big news on the [Funding/Event]. Usually, the 'ops drag' hits hardest at this specific growth phase."
+      - **Recent Post:** Quote their specific insight -> "Your point about [Topic] was spot on."
 
-      **SCENARIO B: Sparse Profile (No news)**
+      **PRIORITY 3: SPARSE PROFILE (No news/signals)**
       - *Logic:* Look at their **Headine/Role**. What is the #1 headache for someone in that seat?
-      - *Example (Targeting a CMO):* "Saw you're leading marketing at [Company]. With the current shift in ad spend efficiency, the challenge is often bridging brand awareness to actual revenue..."
-      - *Example (Targeting a Founder):* "Building in the [Industry] space is tough right now with [Trend]. Usually, the bottleneck is..."
+      - *Example:* "Leading marketing at [Company] right now is tough—bridging brand awareness to actual revenue is the common bottleneck..."
 
       ---------------------------------------------------------
       **STRICT "ANTI-BOT" RULES:**
@@ -85,11 +95,12 @@ export async function POST(req) {
       2. **NEVER** say "I noticed we have mutual interests."
       3. **NEVER** use the word "synergy."
       4. **ALWAYS** separate the paragraphs. Visual spacing is human.
+      5. **ALWAYS** use the extracted First Name: "${firstName}".
 
       **OUTPUT FORMAT (JSON ONLY):**
       {
         "icebreaker": "The observation or problem inference",
-        "message": "Hi ${firstName},\n\n[Specific Observation/Inference].\n\n[The 'Bridge' - linking that problem to how we solved it for others].\n\n[Low friction ask]?"
+        "message": "Hi ${firstName},\n\n[Specific Observation/Icebreaker].\n\n[The 'Bridge' - linking that signal to how we solved it/My Offer].\n\n[Low friction ask]?"
       }
     `;
 
