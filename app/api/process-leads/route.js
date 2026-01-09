@@ -7,12 +7,11 @@ function cleanJson(text) {
   return text.replace(/```json/g, '').replace(/```/g, '').trim();
 }
 
-// HELPER: Extract Name from URL if Scraper Fails
+// Helper: Clean Name
 function getNameFromUrl(url) {
   try {
     if (!url) return "there";
     const slug = url.split('/in/')[1]?.split('/')[0] || "";
-    // Remove numbers at end, replace dashes with spaces, Capitalize
     const cleanedSlug = slug.replace(/-[\d\w]+$/, '').replace(/-/g, ' '); 
     return cleanedSlug.replace(/\b\w/g, l => l.toUpperCase()) || "there";
   } catch (e) {
@@ -22,17 +21,13 @@ function getNameFromUrl(url) {
 
 export async function POST(req) {
   try {
-    // 1. Receive Inputs (No Cookies needed!)
     const { apifyKey, apiKey, provider, profileUrl, customPrompt, myOffer } = await req.json();
 
     console.log(`\n--- PROCESSING: ${profileUrl} ---`);
 
     const apifyClient = new ApifyClient({ token: apifyKey });
-
-    // 2. USE THE CORRECT PAID ACTOR (No Cookies)
-    // Make sure you visited https://apify.com/dev_fusion/linkedin-profile-scraper and clicked "Try" once!
-    console.log("Starting Scraper: dev_fusion/linkedin-profile-scraper...");
     
+    // Using the 'dev_fusion' scraper (Standard for Paid Plans)
     const run = await apifyClient.actor("dev_fusion/linkedin-profile-scraper").call({
       profileUrls: [profileUrl],
     });
@@ -40,83 +35,61 @@ export async function POST(req) {
     const { items } = await apifyClient.dataset(run.defaultDatasetId).listItems();
     const profileData = items[0];
 
-    if (!profileData) {
-      console.error("❌ Apify returned no data!");
-      throw new Error("Failed to scrape data. Profile might be private.");
-    }
-
-    // 3. ROBUST DATA MAPPING
-    // DevFusion puts name in 'fullName'. If missing, check 'firstName' + 'lastName'.
-    let fullName = profileData.fullName || `${profileData.firstName || ''} ${profileData.lastName || ''}`.trim();
-    
-    // Fallback: Extract from URL if API failed
-    if (!fullName || fullName === "undefined undefined" || fullName.length < 2) {
-      console.log("⚠️ Name missing in data. Extracting from URL...");
-      fullName = getNameFromUrl(profileUrl);
-    }
+    // --- DATA MAPPING ---
+    let fullName = profileData?.fullName || profileData?.name || `${profileData?.firstName} ${profileData?.lastName}`;
+    if (!fullName || fullName.includes("undefined")) fullName = getNameFromUrl(profileUrl);
     
     const firstName = fullName.split(' ')[0] || "there";
+    const headline = profileData?.headline || "";
+    const about = profileData?.summary || profileData?.about || "";
+    const postsRaw = profileData?.posts || [];
+    const experienceRaw = profileData?.experience || [];
 
-    // Map other fields
-    const headline = profileData.headline || "";
-    const about = profileData.summary || profileData.about || "";
-    const postsRaw = profileData.posts || [];
-    const experienceRaw = profileData.experience || [];
-    const educationRaw = profileData.education || [];
-
-    // 4. PREPARE CONTEXT (Targeting "Specific" Details)
+    // Context for AI
     const summaryData = `
       Name: ${fullName}
-      Headline: ${headline}
-      About: ${about.substring(0, 600)}...
-      
-      LATEST POSTS: 
-      ${JSON.stringify(postsRaw.slice(0, 3))}
-      
-      CAREER HISTORY (Look for Ventures, Exits, Roles): 
-      ${JSON.stringify(experienceRaw.slice(0, 3))}
-      
-      EDUCATION (Look for Awards/Alumni): 
-      ${JSON.stringify(educationRaw)}
+      Current Role: ${headline}
+      About Section: ${about}
+      Recent Posts: ${JSON.stringify(postsRaw.slice(0, 3))}
+      Career History: ${JSON.stringify(experienceRaw.slice(0, 2))}
     `;
 
-    console.log("✅ Data Mapped for:", fullName);
-
-    // 5. SYSTEM PROMPT: "LEVEL 4" SPECIFICITY
+    // --- THE "HUMAN CONSULTANT" PROMPT ---
     const systemPrompt = `
-      You are an expert SDR doing cold outreach.
+      You are a senior business partner, NOT a sales bot. 
       
-      LEAD DATA:
-      ${summaryData}
-
-      YOUR CONTEXT/OFFER:
-      ${myOffer || "We help companies scale."}
-
       YOUR GOAL:
-      Write a specific, high-impact connection request.
+      Write a message that sounds like it came from a peer who understands their specific business challenges.
+
+      INPUTS:
+      - **Lead:** ${summaryData}
+      - **My Offer:** "${myOffer || "We help companies scale operations."}"
       
-      CRITICAL RULE:
-      **NO GENERIC FILLER.** Never say "I noticed a lack of activity" or "I see we have mutual interests."
+      ---------------------------------------------------------
+      **STRATEGY: THE "PROBLEM-FIRST" BRIDGE**
       
-      STEP 1: FIND THE "HOOK" (Priority Order)
-      1. **Specific Venture/Result:** Did they build a specific company? (e.g. "Leading FoxTale to ₹300Cr...")
-      2. **Award/Recognition:** (e.g. "Congrats on the Forbes 30U30 feature...")
-      3. **Recent Post:** Quote a specific insight they shared.
-      4. **Role Scope:** (e.g. "Your work bridging clinical care with research at EpiSoft is commendable.")
+      Instead of saying "I saw your profile," you must **INFER A PROBLEM** based on their role/industry and bridge it to the offer.
 
-      STEP 2: WRITE THE MESSAGE
-      - Start with: "Hi ${firstName},"
-      - **Icebreaker:** One sentence validating the specific hook found above.
-      - **Bridge:** A natural transition to your offer. (e.g. "Love watching how you're scaling this.", "Great to see leaders driving innovation in [Industry].")
-      - **Close:** "Great to have you in my network."
+      **SCENARIO A: They have specific news (New Role, Funding, Post)**
+      - *Logic:* Validate the news -> Mention the "hidden pain" of that good news -> Offer solution.
+      - *Example:* "Saw the goal to mobilize 50k caregivers. Usually, the 'ops drag' hits hardest at this phase. We helped a similar group automate scheduling to handle that volume..."
 
-      USER CUSTOM CONDITIONS:
-      ${customPrompt || ""}
+      **SCENARIO B: Sparse Profile (No news)**
+      - *Logic:* Look at their **Headine/Role**. What is the #1 headache for someone in that seat?
+      - *Example (Targeting a CMO):* "Saw you're leading marketing at [Company]. With the current shift in ad spend efficiency, the challenge is often bridging brand awareness to actual revenue..."
+      - *Example (Targeting a Founder):* "Building in the [Industry] space is tough right now with [Trend]. Usually, the bottleneck is..."
 
-      OUTPUT FORMAT (JSON ONLY):
+      ---------------------------------------------------------
+      **STRICT "ANTI-BOT" RULES:**
+      1. **NEVER** say "I noticed your profile is sparse." (Instant fail).
+      2. **NEVER** say "I noticed we have mutual interests."
+      3. **NEVER** use the word "synergy."
+      4. **ALWAYS** separate the paragraphs. Visual spacing is human.
+
+      **OUTPUT FORMAT (JSON ONLY):**
       {
-        "icebreaker": "The specific observation",
-        "message": "Hi ${firstName}, [Icebreaker]. [Bridge]. [Close]."
+        "icebreaker": "The observation or problem inference",
+        "message": "Hi ${firstName},\n\n[Specific Observation/Inference].\n\n[The 'Bridge' - linking that problem to how we solved it for others].\n\n[Low friction ask]?"
       }
     `;
 
