@@ -6,19 +6,15 @@ export default function Home() {
   const [apifyKey, setApifyKey] = useState('');
   const [apiKey, setApiKey] = useState('');
   const [provider, setProvider] = useState('openai');
+  const [customPrompt, setCustomPrompt] = useState('');
   const [leadInput, setLeadInput] = useState('');
-  
-  // THE BRAIN INPUTS
-  const [myOffer, setMyOffer] = useState(''); 
-  const [customPrompt, setCustomPrompt] = useState(''); 
-  
   const [results, setResults] = useState([]);
   const [loading, setLoading] = useState(false);
   const [currentStatus, setCurrentStatus] = useState('');
 
   const handleStart = async () => {
-    if (!apifyKey || !apiKey || !leadInput || !myOffer) {
-      alert("Please fill in API Keys, Leads, AND Your Offer.");
+    if (!apifyKey || !apiKey || !leadInput) {
+      alert("Please fill in all fields.");
       return;
     }
 
@@ -26,7 +22,7 @@ export default function Home() {
     const urls = leadInput.split('\n').filter(url => url.trim() !== '');
 
     for (const url of urls) {
-      setCurrentStatus(`Thinking with ${provider === 'openai' ? 'OpenAI' : 'Gemini'}: ${url}...`);
+      setCurrentStatus(`Processing with ${provider === 'openai' ? 'OpenAI' : 'Gemini'}: ${url}...`);
       
       try {
         const response = await fetch('/api/process-leads', {
@@ -37,8 +33,7 @@ export default function Home() {
             apiKey,
             provider, 
             profileUrl: url.trim(),
-            myOffer,      // Sends your Value Prop
-            customPrompt  // Sends your "Dark Signals" (G2/Ads info)
+            customPrompt
           }),
         });
 
@@ -59,21 +54,22 @@ export default function Home() {
     setLoading(false);
   };
 
+  // TSV Copy for Excel/Google Sheets
   const copyTable = () => {
-    const headers = ["Name", "Profile URL", "Strategy Used", "Icebreaker", "Message"];
+    const headers = ["Name", "Profile URL", "Icebreaker", "Message"];
     const rows = results.map(row => {
       const clean = (text) => (text || "").toString().replace(/\t/g, " ").replace(/\n/g, " ").trim();
       return [
         clean(row.name),
         clean(row.profileUrl),
-        clean(row.strategy), 
         clean(row.icebreaker),
         clean(row.message)
       ].join("\t");
     });
+
     const tsvData = [headers.join("\t"), ...rows].join("\n");
     navigator.clipboard.writeText(tsvData);
-    alert("Table copied! Paste into Excel/Sheets.");
+    alert("Table copied! You can now paste directly into Excel or Google Sheets.");
   };
 
   const clearTable = () => {
@@ -89,7 +85,7 @@ export default function Home() {
         
         <div className="text-center">
           <h1 className="text-3xl font-bold text-blue-800">LinkedIn Icebreaker Generator</h1>
-          <p className="text-gray-500 mt-2">Autonomous "Level 4" Personalization Engine</p>
+          <p className="text-gray-500 mt-2">Generate hyper-personalized outreach using OpenAI or Gemini</p>
         </div>
 
         {/* Configuration Panel */}
@@ -113,34 +109,15 @@ export default function Home() {
               <input type="password" placeholder={provider === 'openai' ? "OpenAI API Key" : "Gemini API Key"} className="w-full p-3 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none text-sm placeholder-gray-500 text-gray-900" value={apiKey} onChange={(e) => setApiKey(e.target.value)} />
             </div>
 
-            {/* THE BRAIN: OFFER CONTEXT */}
             <div className="space-y-2">
-              <label className="block text-sm font-semibold text-blue-700">3. My Offer (Required)</label>
-              <textarea 
-                placeholder="What are you selling? (e.g. 'We help Series B startups scale engineering squads using AI...')" 
-                className="w-full h-32 p-3 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none text-sm placeholder-gray-500 text-gray-900 bg-blue-50/50 border-blue-100" 
-                value={myOffer} 
-                onChange={(e) => setMyOffer(e.target.value)} 
-              />
+              <label className="block text-sm font-semibold text-gray-700">3. Custom Instructions</label>
+              <textarea placeholder="Add signals you wanna target" className="w-full h-24 p-3 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none text-sm placeholder-gray-500 text-gray-900" value={customPrompt} onChange={(e) => setCustomPrompt(e.target.value)} />
             </div>
           </div>
 
-          <div className="space-y-4">
-            <div className="space-y-2">
-              <label className="block text-sm font-semibold text-gray-700">4. Lead Sheet (Paste URLs)</label>
-              <textarea placeholder="Paste LinkedIn Profile URLs here..." className="w-full h-48 p-3 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none text-sm font-mono placeholder-gray-500 text-gray-900" value={leadInput} onChange={(e) => setLeadInput(e.target.value)} />
-            </div>
-             
-             {/* THE BRAIN: DARK SIGNALS */}
-             <div className="space-y-2">
-              <label className="block text-sm font-semibold text-gray-700">5. User Context / Dark Signals (Optional)</label>
-              <textarea 
-                placeholder="Manual Override: 'They are running Ads', 'Saw bad G2 reviews', 'Using Hubspot'..." 
-                className="w-full h-24 p-3 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none text-sm placeholder-gray-500 text-gray-900 bg-gray-50" 
-                value={customPrompt} 
-                onChange={(e) => setCustomPrompt(e.target.value)} 
-              />
-            </div>
+          <div className="space-y-2">
+            <label className="block text-sm font-semibold text-gray-700">4. Lead Sheet (Paste URLs)</label>
+            <textarea placeholder="Paste LinkedIn Profile URLs here (one per line)..." className="w-full h-full min-h-[300px] p-3 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none text-sm font-mono placeholder-gray-500 text-gray-900" value={leadInput} onChange={(e) => setLeadInput(e.target.value)} />
           </div>
         </div>
 
@@ -167,7 +144,7 @@ export default function Home() {
                 <thead className="bg-gray-100 text-gray-600 uppercase text-xs font-bold">
                   <tr>
                     <th className="p-4">Name</th>
-                    <th className="p-4 w-1/6">Strategy Picked</th>
+                    <th className="p-4">Profile</th>
                     <th className="p-4 w-1/3">Icebreaker</th>
                     <th className="p-4 w-1/3">Message</th>
                   </tr>
@@ -176,7 +153,7 @@ export default function Home() {
                   {results.map((row, index) => (
                     <tr key={index} className="hover:bg-blue-50 transition-colors">
                       <td className="p-4 font-medium text-gray-800">{row.name}</td>
-                      <td className="p-4 text-xs font-semibold text-blue-600 uppercase tracking-wide">{row.strategy}</td>
+                      <td className="p-4"><a href={row.profileUrl} target="_blank" className="text-blue-600 hover:underline truncate block max-w-[150px]">Link</a></td>
                       <td className="p-4 text-gray-700 leading-relaxed">{row.icebreaker}</td>
                       <td className="p-4 text-gray-600 italic bg-gray-50/50 leading-relaxed whitespace-pre-wrap">{row.message}</td>
                     </tr>
