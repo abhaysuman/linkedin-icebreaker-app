@@ -8,12 +8,11 @@ function cleanJson(text) {
 }
 
 // HELPER: Extract Name from URL if Scraper Fails
-// (e.g. "https://linkedin.com/in/abhay-suman" -> "Abhay Suman")
 function getNameFromUrl(url) {
   try {
     if (!url) return "there";
     const slug = url.split('/in/')[1]?.split('/')[0] || "";
-    // Remove numbers at the end (common in LinkedIn URLs) and capitalize
+    // Remove numbers at end, replace dashes with spaces, Capitalize
     const cleanedSlug = slug.replace(/-[\d\w]+$/, '').replace(/-/g, ' '); 
     return cleanedSlug.replace(/\b\w/g, l => l.toUpperCase()) || "there";
   } catch (e) {
@@ -23,97 +22,100 @@ function getNameFromUrl(url) {
 
 export async function POST(req) {
   try {
-    // No cookie needed here!
+    // 1. Receive Inputs (No Cookies needed!)
     const { apifyKey, apiKey, provider, profileUrl, customPrompt, myOffer } = await req.json();
 
     console.log(`\n--- PROCESSING: ${profileUrl} ---`);
 
     const apifyClient = new ApifyClient({ token: apifyKey });
 
-    console.log("Starting Scraper: rocky/linkedin-profile-scraper (No Cookie Mode)...");
+    // 2. USE THE CORRECT PAID ACTOR (No Cookies)
+    // Make sure you visited https://apify.com/dev_fusion/linkedin-profile-scraper and clicked "Try" once!
+    console.log("Starting Scraper: dev_fusion/linkedin-profile-scraper...");
     
-    // Using 'rocky' which works great on paid plans without cookies
-    const run = await apifyClient.actor("rocky/linkedin-profile-scraper").call({
+    const run = await apifyClient.actor("dev_fusion/linkedin-profile-scraper").call({
       profileUrls: [profileUrl],
-      deepScrape: true, // This ensures we get the "About" and "Posts" sections
     });
 
     const { items } = await apifyClient.dataset(run.defaultDatasetId).listItems();
     const profileData = items[0];
 
-    // --- 1. ROBUST NAME EXTRACTION ---
-    // Rocky sometimes puts the name in 'name', 'fullName', or even 'title'
-    let fullName = profileData?.fullName || profileData?.name || profileData?.title;
+    if (!profileData) {
+      console.error("❌ Apify returned no data!");
+      throw new Error("Failed to scrape data. Profile might be private.");
+    }
+
+    // 3. ROBUST DATA MAPPING
+    // DevFusion puts name in 'fullName'. If missing, check 'firstName' + 'lastName'.
+    let fullName = profileData.fullName || `${profileData.firstName || ''} ${profileData.lastName || ''}`.trim();
     
-    // Fallback: If Apify gave us nothing, get name from the URL
-    if (!fullName || fullName === "undefined undefined" || fullName === "null null") {
+    // Fallback: Extract from URL if API failed
+    if (!fullName || fullName === "undefined undefined" || fullName.length < 2) {
       console.log("⚠️ Name missing in data. Extracting from URL...");
       fullName = getNameFromUrl(profileUrl);
     }
     
     const firstName = fullName.split(' ')[0] || "there";
 
-    if (!profileData) {
-        console.log("⚠️ Scraper returned empty object. Using URL fallback completely.");
-    }
+    // Map other fields
+    const headline = profileData.headline || "";
+    const about = profileData.summary || profileData.about || "";
+    const postsRaw = profileData.posts || [];
+    const experienceRaw = profileData.experience || [];
+    const educationRaw = profileData.education || [];
 
-    // --- 2. DATA MAPPING (Fixing the "Undefined" bug) ---
-    // Rocky uses 'activities' for posts and 'positions' for experience
-    const headline = profileData?.headline || profileData?.sub_title || "";
-    const about = profileData?.summary || profileData?.about || "";
-    
-    const postsRaw = profileData?.activities || profileData?.posts || [];
-    const experienceRaw = profileData?.positions || profileData?.experience || [];
-    const educationRaw = profileData?.education || [];
-
-    // Prepare Context
+    // 4. PREPARE CONTEXT (Targeting "Specific" Details)
     const summaryData = `
       Name: ${fullName}
       Headline: ${headline}
-      About: ${about} 
-      LATEST ACTIVITY: ${JSON.stringify(postsRaw.slice(0, 3))}
-      CAREER HISTORY (Look for Ventures/Roles): ${JSON.stringify(experienceRaw.slice(0, 3))}
-      EDUCATION (Look for Awards/Alumni): ${JSON.stringify(educationRaw)}
+      About: ${about.substring(0, 600)}...
+      
+      LATEST POSTS: 
+      ${JSON.stringify(postsRaw.slice(0, 3))}
+      
+      CAREER HISTORY (Look for Ventures, Exits, Roles): 
+      ${JSON.stringify(experienceRaw.slice(0, 3))}
+      
+      EDUCATION (Look for Awards/Alumni): 
+      ${JSON.stringify(educationRaw)}
     `;
 
-    console.log("✅ Mapped Data for:", fullName);
+    console.log("✅ Data Mapped for:", fullName);
 
-    // --- 3. SYSTEM PROMPT: SPECIFICITY FIRST ---
+    // 5. SYSTEM PROMPT: "LEVEL 4" SPECIFICITY
     const systemPrompt = `
-      You are an expert networker doing cold outreach.
+      You are an expert SDR doing cold outreach.
       
       LEAD DATA:
       ${summaryData}
 
       YOUR CONTEXT/OFFER:
-      ${myOffer || "We help companies scale efficiently."}
+      ${myOffer || "We help companies scale."}
 
       YOUR GOAL:
-      Write a short, high-impact connection request.
+      Write a specific, high-impact connection request.
       
-      CRITICAL INSTRUCTION:
-      **Do NOT be generic.** Do NOT say "I noticed a lack of activity." 
-      If they haven't posted recently, look at their **Headline**, **Experience**, or **About** section to find specific achievements like:
-      - Specific past ventures (e.g. "Impressed by how you built GoKratos")
-      - Awards (e.g. "Congrats on the Forbes 30U30 feature")
-      - Specific roles (e.g. "Leading FoxTale as Founder is impressive")
+      CRITICAL RULE:
+      **NO GENERIC FILLER.** Never say "I noticed a lack of activity" or "I see we have mutual interests."
+      
+      STEP 1: FIND THE "HOOK" (Priority Order)
+      1. **Specific Venture/Result:** Did they build a specific company? (e.g. "Leading FoxTale to ₹300Cr...")
+      2. **Award/Recognition:** (e.g. "Congrats on the Forbes 30U30 feature...")
+      3. **Recent Post:** Quote a specific insight they shared.
+      4. **Role Scope:** (e.g. "Your work bridging clinical care with research at EpiSoft is commendable.")
 
-      STEP 1: THE ICEBREAKER
-      - Reference the MOST impressive specific detail found in the data.
-      - Be direct. (e.g. "Your work bridging clinical care with research at EpiSoft is commendable.")
-
-      STEP 2: THE MESSAGE
+      STEP 2: WRITE THE MESSAGE
       - Start with: "Hi ${firstName},"
-      - Insert the Icebreaker.
-      - Add a "Bridge": A genuine professional reason to connect related to YOUR OFFER.
-      - Close: "Great to have you in my network." or "Would love to connect."
+      - **Icebreaker:** One sentence validating the specific hook found above.
+      - **Bridge:** A natural transition to your offer. (e.g. "Love watching how you're scaling this.", "Great to see leaders driving innovation in [Industry].")
+      - **Close:** "Great to have you in my network."
 
       USER CUSTOM CONDITIONS:
       ${customPrompt || ""}
 
       OUTPUT FORMAT (JSON ONLY):
       {
-        "icebreaker": "The specific 1-sentence observation",
+        "icebreaker": "The specific observation",
         "message": "Hi ${firstName}, [Icebreaker]. [Bridge]. [Close]."
       }
     `;
@@ -125,7 +127,7 @@ export async function POST(req) {
       const completion = await openai.chat.completions.create({
         model: "gpt-4o",
         messages: [
-          { role: "system", content: "You are a helpful assistant that outputs JSON." },
+          { role: "system", content: "You output valid JSON." },
           { role: "user", content: systemPrompt },
         ],
         temperature: 0.7, 
